@@ -4,6 +4,7 @@ from . import encoding
 from . import evm
 from . import exp_circuit
 from . import opcode
+from . import rlp_encoding
 from . import state
 from . import tx
 from . import util

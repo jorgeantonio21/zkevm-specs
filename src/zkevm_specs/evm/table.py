@@ -177,6 +177,14 @@ class BytecodeFieldTag(IntEnum):
     Header = 1
     Byte = 2
 
+class RlpEncodingTag(IntEnum):
+    """
+    Tag for RlpTable lookup.
+    """
+
+    LengthOfLength = 1
+    Length = 2
+    Data = 3
 
 class RW(IntEnum):
     Read = 0
@@ -414,6 +422,16 @@ class BytecodeTableRow(TableRow):
     index: Expression
     is_code: Expression
     value: Expression
+
+@dataclass(frozen=True)
+class RlpEncodingTableRow(TableRow):
+    # TODO: understand missing fields
+    rlp_encoding_hash: Expression
+    tag: Expression
+    index: Expression
+    value: Expression
+    is_final: Expression
+    depth: Expression
 
 
 @dataclass(frozen=True)
