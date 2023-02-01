@@ -47,6 +47,9 @@ class RLC:
     # value in int
     int_value: int
     # encoded value using random linear combination
+    # value in [u64], value = 2^{n-1} * value[n-1] + ... + value[1] * 2 + value[0], where each value[i] in {0, 1}
+    # rlc_value = value[0] + value[1] * r^1 + value[2] * r^2 + ... + value[n-1] * r^{n-1}, r <-> random value
+    # r-ary encoding
     rlc_value: FQ
     # bytes in little-endian order
     le_bytes: bytes

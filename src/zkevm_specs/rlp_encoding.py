@@ -164,6 +164,7 @@ def additional_constraints_circuit_verification(prev: Row, cur: Row, next: Row, 
     assert cur.is_final in range(0, 2) # i.e., cur.is_final is a boolean value, is there a nicer way to express this ? 
     assert cur.padding in range(0, 2)
 
+    # for q_first row
     if cur.q_first:
         assert cur.value == cur.value_rlc
         assert cur.index == 0
@@ -174,11 +175,85 @@ def additional_constraints_circuit_verification(prev: Row, cur: Row, next: Row, 
         # padding can only go from 0 -> 1
         assert cur.padding - prev.padding in range(0, 2)
 
+    # for q_last row which is not part of padding
     if cur.q_last & ~cur.padding:
         assert cur.value_rlc == cur.keccak_tuple[0]
         assert cur.index + 1 == cur.keccak_tuple[1]
         assert cur.hash == cur.keccak_tuple[2]
 
+    # for q_last row, which is not padding
     if cur.q_last:
         assert cur.is_final | cur.padding == 1
-        
+
+# Populate the circuit matrix
+def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncoding], randomness: int):
+    # all rows are usable, with padding if necessary
+    # k should correspond to a well defined notion of 'size' of the circuit
+    last_row_offset = 2 ** k - 1
+
+    rows = []
+    offset = 0
+    for rlp_encoding in rlp_encodings:
+        value_rlc = FQ(0) # element in the field
+        for idx, row in enumerate(rlp_encoding.rows):
+            # subsequent rows are deemed to represent rlp_encoding bytes
+            # we need to track which bytes correspond to either of the tags
+            # Tag::LengthOfLength, Tag::Length, Tag::Data
+            is_final = rlp_encoding.rows[idx + 1].value.expr().n >= 128 # range of data value itself
+                                                                        # TODO: is .n the right way to get a number of a FQ ? 
+            value = row.value.expr().n # TODO: is this the right way to recover the underlying integer byte number ? 
+            index = 0 if value >= 128 else index + 1
+            # it is pretty straighforward to define the tag, from the row.value itself
+            # TODO: we can make this more idiomatic by using new Python's match functionality
+            tag = compute_tag_from_value(value)
+            # it is also possible to define the correct value of lenght_rindex
+            # we basically iterate over the next rows with tag == Length
+            # and add 1 to length_rindex, notice that length_rindex is supposed
+            # to be decreasing
+            length_rindex = 0
+            if tag == RlpEncodingTag.Length:
+                aux_idx = idx + 1
+                next_tag = tag
+                while next_tag == RlpEncodingTag.Length & aux_idx < len(rlp_encoding.rows):
+                    length_rindex += 1
+                    next_tag = compute_tag_from_value(rlp_encoding.rows[aux_idx].value.expr().n)
+                    aux_idx += 1
+            # computing length_acc, in this case the accumulator is cumulative, so 
+            length_acc = 0
+            if tag == RlpEncodingTag.Length:
+                exp = 0
+                prev_tag = tag
+                while prev_tag == RlpEncodingTag.Length & idx - exp > -1:
+                    length_acc += rlp_encoding.rows[idx - exp].value * (256 ** exp)
+            # computing the block length, the block length is constant across
+            # values of same tag and same depth. 
+            if tag == RlpEncodingTag.LengthOfLength:
+                length_of_length = row.tag
+            value_rlc = value_rlc * randomness + row.value
+
+            # set the data for this row
+            rows.append(
+                Row(
+                    q_enable = 1, # TODO: tracks if current row is enable in the layout, 
+                                  # if I undestand it correctly, every row should be enabled
+                    q_first = offset == 0,
+                    q_last = offset == last_row_offset,
+                    is_final = is_final,
+                    index = index,
+                    tag = tag,
+                    value = value,
+                    length_rindex = length_rindex,
+                )
+            )
+
+def compute_tag_from_value(value: int):
+    if value < 128:
+        tag = RlpEncodingTag.Data
+    elif value in range(128, 184) | value in range(192, 247):
+        tag = RlpEncodingTag.Length
+    elif value in range(184, 192) | value in range(247, 256):
+        tag = RlpEncodingTag.LengthOfLength
+    else:
+        raise Exception("Invalid byte value for RLP encoding")
+    
+    return tag
