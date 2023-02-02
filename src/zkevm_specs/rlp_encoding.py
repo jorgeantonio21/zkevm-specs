@@ -193,7 +193,10 @@ def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncod
 
     rows = []
     offset = 0
+
     for rlp_encoding in rlp_encodings:
+        prev_depth = 0 # previous depth starts at 0
+        prev_data_rindex = 2 ** 64 # pick a large number for starting previous data_rindex
         value_rlc = FQ(0) # element in the field
         for idx, row in enumerate(rlp_encoding.rows):
             # subsequent rows are deemed to represent rlp_encoding bytes
@@ -218,17 +221,57 @@ def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncod
                     length_rindex += 1
                     next_tag = compute_tag_from_value(rlp_encoding.rows[aux_idx].value.expr().n)
                     aux_idx += 1
-            # computing length_acc, in this case the accumulator is cumulative, so 
-            length_acc = 0
-            if tag == RlpEncodingTag.Length:
-                exp = 0
-                prev_tag = tag
-                while prev_tag == RlpEncodingTag.Length & idx - exp > -1:
-                    length_acc += rlp_encoding.rows[idx - exp].value * (256 ** exp)
+
+            # computing length_acc, in this case the accumulator is cumulative
+            length_acc = compute_length_acc_from_encoding(tag, rlp_encoding.rows, idx)
+    
             # computing the block length, the block length is constant across
             # values of same tag and same depth. 
-            if tag == RlpEncodingTag.LengthOfLength:
-                length_of_length = row.tag
+            block_length = compute_block_length_from_encoding(tag, rlp_encoding.rows, idx)
+
+            # computing the depth and data_rindex can be achieved recursively
+            if offset == 0:
+                depth = 0
+                data_rindex = block_length
+                prev_depth = 0
+                prev_data_rindex = block_length
+            elif tag == RlpEncodingTag.LengthOfLength:
+                if prev_data_rindex == 1:
+                    depth = prev_depth
+                else:
+                    depth = prev_depth + 1
+                    prev_depth = depth # TODO: is this implementation correct ? 
+                data_rindex = block_length
+                prev_data_rindex = data_rindex # TODO: is this implementation correct ? 
+            elif tag == RlpEncodingTag.Length:
+                if prev_data_rindex == 1:
+                    depth = prev_depth
+                else:
+                    depth = prev_depth + 1
+                if depth == prev_depth:
+                    if prev_data_rindex == 1:
+                        data_rindex = block_length
+                    else:
+                        data_rindex = prev_data_rindex - 1
+                else:
+                    data_rindex = block_length
+                prev_data_rindex = data_rindex # TODO: is this implementation correct ?
+                prev_depth = depth # TODO: is this implementation correct ? 
+            elif tag == RlpEncodingTag.Data:
+                # Presumably, the depth of data has to be equal to the previous depth
+                # and the data_rindex has to be one minus the previous data_rindex
+                depth = prev_depth
+                data_rindex = prev_data_rindex
+
+                # we don't need to update the prev_depth, in this case, only data_rindex
+                prev_data_rindex = data_rindex 
+
+            # TODO: we need to compute the parent_data_rindex
+            # and this should be used to compute data_rindex when we step out
+            # of a nested block, which we currently don't do. We will need to 
+            # store the previous block_length, as well as previous parent_rindex
+
+            # compute the value_rlc recursively   
             value_rlc = value_rlc * randomness + row.value
 
             # set the data for this row
@@ -243,6 +286,11 @@ def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncod
                     tag = tag,
                     value = value,
                     length_rindex = length_rindex,
+                    length_acc = length_acc,
+                    block_length = block_length,
+                    depth = depth,
+                    data_rindex = data_rindex,
+                    padding = row.padding,
                 )
             )
 
@@ -257,3 +305,65 @@ def compute_tag_from_value(value: int):
         raise Exception("Invalid byte value for RLP encoding")
     
     return tag
+
+def compute_length_acc_from_encoding(tag: RlpEncodingTag, rows: Sequence[Row], current_idx: int):
+    length_acc = 0
+    if tag == RlpEncodingTag.Length:
+        exp = 0
+        prev_tag = tag
+        while prev_tag == RlpEncodingTag.Length & current_idx - exp > -1:
+            length_acc += rows[current_idx - exp].value * (256 ** exp)
+
+    return length_acc
+
+def compute_block_length_from_encoding(tag: RlpEncodingTag, rows: Sequence[Row], current_idx: int):
+    row = rows[current_idx]
+    # computing the block length, the block length is constant across
+    # values of same tag and same depth. 
+    if tag == RlpEncodingTag.LengthOfLength:
+        length_of_length = row.value
+        # not strictly necessary, but we are conservative
+        assert length_of_length in range(184, 192) | length_of_length in range(248, 256)
+        
+        # we are in the case of a start of a list of elements or a string, 
+        # whose length is big. The corresponding block corresponds to the 
+        # whole list/string size (after encoding)
+        # this is captured by the length_acc of the last row corresponding to the last
+        # byte of the encoded length.
+        length_of_length -= 183 if length_of_length in range(184, 192) else 247
+
+        # we compute the length_acc of the last row corresponding to the final length_of_length row
+        # so we get the total number of values of the original array
+        total_length_acc = compute_length_acc_from_encoding(
+            RlpEncodingTag.Length, rows, current_idx + length_of_length
+        )
+        # the final block length should be equal to total_length_acc plus the bytes used
+        # to specify both the length encoding (length_of_length) and the length_of_length (1)
+        block_length = total_length_acc + 1 + length_of_length
+    elif tag == RlpEncodingTag.Length:
+        length = row.value
+        increment = 0
+        if length in range(128, 184):
+            a = 128
+            b = 184
+        elif length in range(192, 248):
+            a = 192
+            b = 248
+        else:
+            raise Exception("Invalid byte value for length")
+        total_length_acc = compute_length_acc_from_encoding(tag, rows, current_idx)
+        # iterate until the last byte specifying the length of rlp encoded data block
+        while rows[current_idx + increment].value in range(a, b):
+            total_length_acc = compute_length_acc_from_encoding(
+                RlpEncodingTag.Length, rows, current_idx + increment
+            )
+    elif tag == RlpEncodingTag.Data:
+        # in this case, the block_length should be equal to the block_length of the length encoding
+        decrement = 0
+        while rows[current_idx + decrement].value <= 127 & decrement > -current_idx:
+            decrement -= 1
+        # let's make sure the closest length byte is of tag RlpEncodingTag.Length
+        assert rows[current_idx + decrement].value in range(128, 184) | rows[current_idx + decrement].value in range(192, 248)
+        block_length = compute_block_length_from_encoding(RlpEncodingTag.Length, rows, current_idx + decrement)
+    
+    return block_length

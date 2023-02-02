@@ -432,6 +432,7 @@ class RlpEncodingTableRow(TableRow):
     value: Expression
     is_final: Expression
     depth: Expression
+    padding: Expression
 
 
 @dataclass(frozen=True)
