@@ -265,12 +265,12 @@ def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncod
             # parent_data_rindex might not be necessary
             # at all for the circuit specification. See
             # the TODO in the beginning of this file
-            parent_data_rindex = prev_block_length
+            parent_rindex = prev_block_length
 
             # update previous block_length, data_rindex, depth
             if prev_row_block_length != block_length:
                 prev_block_length = prev_row_block_length
-                
+
             prev_row_block_length = block_length
             prev_block_length = block_length
             prev_data_rindex = data_rindex
@@ -296,6 +296,7 @@ def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncod
                     block_length = block_length,
                     depth = depth,
                     data_rindex = data_rindex,
+                    parent_rindex = parent_rindex,
                     hash = hash,
                     keccak_tuple = (value_rlc, len(row), hash),
                     padding = False,
