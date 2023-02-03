@@ -5,6 +5,11 @@ from .evm import get_push_size, RlpEncodingTag, RlpEncodingTableRow
 from .encoding import is_circuit_code
 
 # Row in the circuit, TODO: how to have column layout in multiple lines ? 
+# TODO: do we need a parent_rindex ? It seems we can compute the data_rindex
+# from the block_length alone. Moreover, it seems possible to compute the
+# block_length without any knowledge of parent_rindex.
+# In https://github.com/scroll-tech/zkevm-circuits/blob/scroll-stable/zkevm-circuits/src/rlp_circuit.rs,
+# both parent_rindex and depth are not used explicitly
 Row = namedtuple(
     "Row",
     "q_enable q_first q_last is_final index tag value length_rindex length_acc block_length depth parent_rindex data_rindex value_rlc hash keccak_tuple padding"
@@ -195,6 +200,8 @@ def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncod
     offset = 0
 
     for rlp_encoding in rlp_encodings:
+        prev_block_length = 0 # previous block length starts at 0
+        prev_row_block_length = 0 # previous row value of block_length, starts at 0
         prev_depth = 0 # previous depth starts at 0
         prev_data_rindex = 2 ** 64 # pick a large number for starting previous data_rindex
         value_rlc = FQ(0) # element in the field
@@ -229,51 +236,50 @@ def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncod
             # values of same tag and same depth. 
             block_length = compute_block_length_from_encoding(tag, rlp_encoding.rows, idx)
 
-            # computing the depth and data_rindex can be achieved recursively
+            # compute data_rindex
             if offset == 0:
                 depth = 0
                 data_rindex = block_length
-                prev_depth = 0
-                prev_data_rindex = block_length
             elif tag == RlpEncodingTag.LengthOfLength:
-                if prev_data_rindex == 1:
-                    depth = prev_depth
-                else:
-                    depth = prev_depth + 1
-                    prev_depth = depth # TODO: is this implementation correct ? 
                 data_rindex = block_length
-                prev_data_rindex = data_rindex # TODO: is this implementation correct ? 
-            elif tag == RlpEncodingTag.Length:
                 if prev_data_rindex == 1:
                     depth = prev_depth
                 else:
                     depth = prev_depth + 1
-                if depth == prev_depth:
-                    if prev_data_rindex == 1:
-                        data_rindex = block_length
-                    else:
-                        data_rindex = prev_data_rindex - 1
-                else:
+            elif tag == RlpEncodingTag.Length | tag == RlpEncodingTag.Data:
+                # the first condition is unnecessary, for tag Length, I think.
+                # Indeed, a Length tag is always followed by non-empty data after, 
+                # in the same block. Therefore, we will never have a data_rindex = 1
+                # for Length tag.
+                if prev_data_rindex == 1:
                     data_rindex = block_length
-                prev_data_rindex = data_rindex # TODO: is this implementation correct ?
-                prev_depth = depth # TODO: is this implementation correct ? 
-            elif tag == RlpEncodingTag.Data:
-                # Presumably, the depth of data has to be equal to the previous depth
-                # and the data_rindex has to be one minus the previous data_rindex
-                depth = prev_depth
-                data_rindex = prev_data_rindex
+                else:
+                    data_rindex = prev_data_rindex - 1
+                
+                # this condition should not be applied to tag == Data,
+                if prev_data_rindex == 1:
+                    depth = prev_depth
+                else:
+                    depth = prev_depth
+            
+            # parent_data_rindex might not be necessary
+            # at all for the circuit specification. See
+            # the TODO in the beginning of this file
+            parent_data_rindex = prev_block_length
 
-                # we don't need to update the prev_depth, in this case, only data_rindex
-                prev_data_rindex = data_rindex 
-
-            # TODO: we need to compute the parent_data_rindex
-            # and this should be used to compute data_rindex when we step out
-            # of a nested block, which we currently don't do. We will need to 
-            # store the previous block_length, as well as previous parent_rindex
+            # update previous block_length, data_rindex, depth
+            if prev_row_block_length != block_length:
+                prev_block_length = prev_row_block_length
+                
+            prev_row_block_length = block_length
+            prev_block_length = block_length
+            prev_data_rindex = data_rindex
+            prev_depth = depth
 
             # compute the value_rlc recursively   
             value_rlc = value_rlc * randomness + row.value
-
+            # hash of the rlp encoded bytes
+            hash = keccak256(bytes(row)) # TODO: check how to properly extract the bytes from row
             # set the data for this row
             rows.append(
                 Row(
@@ -290,7 +296,9 @@ def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncod
                     block_length = block_length,
                     depth = depth,
                     data_rindex = data_rindex,
-                    padding = row.padding,
+                    hash = hash,
+                    keccak_tuple = (value_rlc, len(row), hash),
+                    padding = False,
                 )
             )
 
