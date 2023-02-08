@@ -203,14 +203,11 @@ def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncod
         prev_block_length = 0 # previous block length starts at 0
         prev_row_block_length = 0 # previous row value of block_length, starts at 0
         prev_depth = 0 # previous depth starts at 0
-        prev_data_rindex = 2 ** 64 # pick a large number for starting previous data_rindex
+        prev_data_rindex = 1 # pick a large number for starting previous data_rindex
         value_rlc = FQ(0) # element in the field
         for idx, row in enumerate(rlp_encoding.rows):
-            # subsequent rows are deemed to represent rlp_encoding bytes
-            # we need to track which bytes correspond to either of the tags
-            # Tag::LengthOfLength, Tag::Length, Tag::Data
-            is_final = rlp_encoding.rows[idx + 1].value.expr().n >= 128 # range of data value itself
-                                                                        # TODO: is .n the right way to get a number of a FQ ? 
+            is_final = idx == len(rlp_encoding.rows) - 1 # checks if it is the last byte of the rlp encoding bytes
+
             value = row.value.expr().n # TODO: is this the right way to recover the underlying integer byte number ? 
             index = 0 if value >= 128 else index + 1
             # it is pretty straighforward to define the tag, from the row.value itself
@@ -302,6 +299,38 @@ def assign_rlp_encoding_circuit(k: int, rlp_encodings: Sequence[UnrolledRlpEncod
                     padding = False,
                 )
             )
+
+            # update offset 
+            offset += 1
+            # return when the circuit is full
+            if offset == 2 ** k:
+                return rows
+            
+     # Padding
+    for idx in range(offset, 2 ** k):
+        rows.append(
+            Row(
+                q_enable = 1, # TODO: tracks if current row is enable in the layout, 
+                              # if I undestand it correctly, every row should be enabled
+                q_first = offset == 0,
+                q_last = offset == last_row_offset,
+                is_final = False,
+                index = offset,
+                tag = RlpEncodingTag.Data,
+                value = 0,
+                length_rindex = 0,
+                length_acc = 0,
+                block_length = 0,
+                depth = 0,
+                data_rindex = 0,
+                parent_rindex = 0,
+                hash = 0,
+                keccak_tuple = (0, 0, 0),
+                padding = True,
+            )
+        )
+
+    return rows
 
 def compute_tag_from_value(value: int):
     if value < 128:
